@@ -1,4 +1,7 @@
-/* Copyright Joyent, Inc. and other Node contributors.
+/* Based on src/http/ngx_http_parse.c from NGINX copyright Igor Sysoev
+ *
+ * Additional changes are licensed under the same terms as NGINX and
+ * copyright Joyent, Inc. and other Node contributors. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -283,10 +286,10 @@ enum state
   , s_res_HT
   , s_res_HTT
   , s_res_HTTP
+  , s_res_first_http_major
   , s_res_http_major
-  , s_res_http_dot
+  , s_res_first_http_minor
   , s_res_http_minor
-  , s_res_http_end
   , s_res_first_status_code
   , s_res_status_code
   , s_res_status_start
@@ -313,10 +316,10 @@ enum state
   , s_req_http_HT
   , s_req_http_HTT
   , s_req_http_HTTP
+  , s_req_first_http_major
   , s_req_http_major
-  , s_req_http_dot
+  , s_req_first_http_minor
   , s_req_http_minor
-  , s_req_http_end
   , s_req_line_almost_done
 
   , s_header_field_start
@@ -792,48 +795,75 @@ reexecute:
 
       case s_res_HTTP:
         STRICT_CHECK(ch != '/');
-        UPDATE_STATE(s_res_http_major);
+        UPDATE_STATE(s_res_first_http_major);
         break;
 
-      case s_res_http_major:
-        if (UNLIKELY(!IS_NUM(ch))) {
+      case s_res_first_http_major:
+        if (UNLIKELY(ch < '0' || ch > '9')) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
 
         parser->http_major = ch - '0';
-        UPDATE_STATE(s_res_http_dot);
+        UPDATE_STATE(s_res_http_major);
         break;
 
-      case s_res_http_dot:
+      /* major HTTP version or dot */
+      case s_res_http_major:
       {
-        if (UNLIKELY(ch != '.')) {
+        if (ch == '.') {
+          UPDATE_STATE(s_res_first_http_minor);
+          break;
+        }
+
+        if (!IS_NUM(ch)) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
 
-        UPDATE_STATE(s_res_http_minor);
+        parser->http_major *= 10;
+        parser->http_major += ch - '0';
+
+        if (UNLIKELY(parser->http_major > 999)) {
+          SET_ERRNO(HPE_INVALID_VERSION);
+          goto error;
+        }
+
         break;
       }
 
-      case s_res_http_minor:
+      /* first digit of minor HTTP version */
+      case s_res_first_http_minor:
         if (UNLIKELY(!IS_NUM(ch))) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
 
         parser->http_minor = ch - '0';
-        UPDATE_STATE(s_res_http_end);
+        UPDATE_STATE(s_res_http_minor);
         break;
 
-      case s_res_http_end:
+      /* minor HTTP version or end of request line */
+      case s_res_http_minor:
       {
-        if (UNLIKELY(ch != ' ')) {
+        if (ch == ' ') {
+          UPDATE_STATE(s_res_first_status_code);
+          break;
+        }
+
+        if (UNLIKELY(!IS_NUM(ch))) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
 
-        UPDATE_STATE(s_res_first_status_code);
+        parser->http_minor *= 10;
+        parser->http_minor += ch - '0';
+
+        if (UNLIKELY(parser->http_minor > 999)) {
+          SET_ERRNO(HPE_INVALID_VERSION);
+          goto error;
+        }
+
         break;
       }
 
@@ -860,9 +890,10 @@ reexecute:
               UPDATE_STATE(s_res_status_start);
               break;
             case CR:
+              UPDATE_STATE(s_res_line_almost_done);
+              break;
             case LF:
-              UPDATE_STATE(s_res_status_start);
-              REEXECUTE();
+              UPDATE_STATE(s_header_field_start);
               break;
             default:
               SET_ERRNO(HPE_INVALID_STATUS);
@@ -884,13 +915,19 @@ reexecute:
 
       case s_res_status_start:
       {
+        if (ch == CR) {
+          UPDATE_STATE(s_res_line_almost_done);
+          break;
+        }
+
+        if (ch == LF) {
+          UPDATE_STATE(s_header_field_start);
+          break;
+        }
+
         MARK(status);
         UPDATE_STATE(s_res_status);
         parser->index = 0;
-
-        if (ch == CR || ch == LF)
-          REEXECUTE();
-
         break;
       }
 
@@ -970,7 +1007,7 @@ reexecute:
           UPDATE_STATE(s_req_spaces_before_url);
         } else if (ch == matcher[parser->index]) {
           ; /* nada */
-        } else if ((ch >= 'A' && ch <= 'Z') || ch == '-') {
+        } else if (IS_ALPHA(ch)) {
 
           switch (parser->method << 16 | parser->index << 8 | ch) {
 #define XX(meth, pos, ch, new_meth) \
@@ -979,27 +1016,31 @@ reexecute:
 
             XX(POST,      1, 'U', PUT)
             XX(POST,      1, 'A', PATCH)
-            XX(POST,      1, 'R', PROPFIND)
-            XX(PUT,       2, 'R', PURGE)
             XX(CONNECT,   1, 'H', CHECKOUT)
             XX(CONNECT,   2, 'P', COPY)
             XX(MKCOL,     1, 'O', MOVE)
             XX(MKCOL,     1, 'E', MERGE)
-            XX(MKCOL,     1, '-', MSEARCH)
             XX(MKCOL,     2, 'A', MKACTIVITY)
             XX(MKCOL,     3, 'A', MKCALENDAR)
             XX(SUBSCRIBE, 1, 'E', SEARCH)
             XX(REPORT,    2, 'B', REBIND)
+            XX(POST,      1, 'R', PROPFIND)
             XX(PROPFIND,  4, 'P', PROPPATCH)
+            XX(PUT,       2, 'R', PURGE)
             XX(LOCK,      1, 'I', LINK)
             XX(UNLOCK,    2, 'S', UNSUBSCRIBE)
             XX(UNLOCK,    2, 'B', UNBIND)
             XX(UNLOCK,    3, 'I', UNLINK)
 #undef XX
+
             default:
               SET_ERRNO(HPE_INVALID_METHOD);
               goto error;
           }
+        } else if (ch == '-' &&
+                   parser->index == 1 &&
+                   parser->method == HTTP_MKCOL) {
+          parser->method = HTTP_MSEARCH;
         } else {
           SET_ERRNO(HPE_INVALID_METHOD);
           goto error;
@@ -1112,41 +1153,57 @@ reexecute:
 
       case s_req_http_HTTP:
         STRICT_CHECK(ch != '/');
-        UPDATE_STATE(s_req_http_major);
+        UPDATE_STATE(s_req_first_http_major);
         break;
 
-      case s_req_http_major:
-        if (UNLIKELY(!IS_NUM(ch))) {
+      /* first digit of major HTTP version */
+      case s_req_first_http_major:
+        if (UNLIKELY(ch < '1' || ch > '9')) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
 
         parser->http_major = ch - '0';
-        UPDATE_STATE(s_req_http_dot);
+        UPDATE_STATE(s_req_http_major);
         break;
 
-      case s_req_http_dot:
+      /* major HTTP version or dot */
+      case s_req_http_major:
       {
-        if (UNLIKELY(ch != '.')) {
+        if (ch == '.') {
+          UPDATE_STATE(s_req_first_http_minor);
+          break;
+        }
+
+        if (UNLIKELY(!IS_NUM(ch))) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
 
-        UPDATE_STATE(s_req_http_minor);
+        parser->http_major *= 10;
+        parser->http_major += ch - '0';
+
+        if (UNLIKELY(parser->http_major > 999)) {
+          SET_ERRNO(HPE_INVALID_VERSION);
+          goto error;
+        }
+
         break;
       }
 
-      case s_req_http_minor:
+      /* first digit of minor HTTP version */
+      case s_req_first_http_minor:
         if (UNLIKELY(!IS_NUM(ch))) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
 
         parser->http_minor = ch - '0';
-        UPDATE_STATE(s_req_http_end);
+        UPDATE_STATE(s_req_http_minor);
         break;
 
-      case s_req_http_end:
+      /* minor HTTP version or end of request line */
+      case s_req_http_minor:
       {
         if (ch == CR) {
           UPDATE_STATE(s_req_line_almost_done);
@@ -1158,8 +1215,21 @@ reexecute:
           break;
         }
 
-        SET_ERRNO(HPE_INVALID_VERSION);
-        goto error;
+        /* XXX allow spaces after digit? */
+
+        if (UNLIKELY(!IS_NUM(ch))) {
+          SET_ERRNO(HPE_INVALID_VERSION);
+          goto error;
+        }
+
+        parser->http_minor *= 10;
+        parser->http_minor += ch - '0';
+
+        if (UNLIKELY(parser->http_minor > 999)) {
+          SET_ERRNO(HPE_INVALID_VERSION);
+          goto error;
+        }
+
         break;
       }
 
@@ -1724,17 +1794,10 @@ reexecute:
         UPDATE_STATE(s_headers_done);
 
         /* Set this here so that on_headers_complete() callbacks can see it */
-        if ((parser->flags & F_UPGRADE) &&
-            (parser->flags & F_CONNECTION_UPGRADE)) {
-          /* For responses, "Upgrade: foo" and "Connection: upgrade" are
-           * mandatory only when it is a 101 Switching Protocols response,
-           * otherwise it is purely informational, to announce support.
-           */
-          parser->upgrade =
-              (parser->type == HTTP_REQUEST || parser->status_code == 101);
-        } else {
-          parser->upgrade = (parser->method == HTTP_CONNECT);
-        }
+        parser->upgrade =
+          ((parser->flags & (F_UPGRADE | F_CONNECTION_UPGRADE)) ==
+           (F_UPGRADE | F_CONNECTION_UPGRADE) ||
+           parser->method == HTTP_CONNECT);
 
         /* Here we call the headers_complete callback. This is somewhat
          * different than other callbacks because if the user returns 1, we
@@ -1753,7 +1816,6 @@ reexecute:
             case 2:
               parser->upgrade = 1;
 
-            /* FALLTHROUGH */
             case 1:
               parser->flags |= F_SKIPBODY;
               break;
@@ -2313,7 +2375,7 @@ http_parser_parse_url(const char *buf, size_t buflen, int is_connect,
       case s_req_server_with_at:
         found_at = 1;
 
-      /* FALLTHROUGH */
+      /* FALLTROUGH */
       case s_req_server:
         uf = UF_HOST;
         break;

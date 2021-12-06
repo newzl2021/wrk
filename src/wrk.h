@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include <pthread.h>
+#include <lua.h>
 #include <inttypes.h>
 #include <sys/types.h>
 #include <netdb.h>
@@ -10,7 +11,6 @@
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <lua.h>
 
 #include "stats.h"
 #include "ae.h"
@@ -25,6 +25,10 @@
 extern const char *VERSION;
 
 typedef struct {
+    lua_State *L;
+} ScriptContext;
+
+typedef struct {
     pthread_t thread;
     aeEventLoop *loop;
     struct addrinfo *addr;
@@ -33,7 +37,7 @@ typedef struct {
     uint64_t requests;
     uint64_t bytes;
     uint64_t start;
-    lua_State *L;
+    ScriptContext ctx;
     errors errors;
     struct connection *cs;
 } thread;

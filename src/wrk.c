@@ -2,6 +2,7 @@
 
 #include "wrk.h"
 #include "script.h"
+#include "lua_script.h"
 #include "main.h"
 
 static struct config {
@@ -92,8 +93,8 @@ int main(int argc, char **argv) {
     statistics.requests = stats_alloc(MAX_THREAD_RATE_S);
     thread *threads     = zcalloc(cfg.threads * sizeof(thread));
 
-    lua_State *L = script_create(cfg.script, url, headers);
-    if (!script_resolve(L, host, service)) {
+    ScriptContext ctx = script_create(cfg.script, url, headers);
+    if (!script_resolve(ctx, host, service)) {
         char *msg = strerror(errno);
         fprintf(stderr, "unable to connect to %s:%s %s\n", host, service, msg);
         exit(1);
@@ -106,14 +107,14 @@ int main(int argc, char **argv) {
         t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);
         t->connections = cfg.connections / cfg.threads;
 
-        t->L = script_create(cfg.script, url, headers);
-        script_init(L, t, argc - optind, &argv[optind]);
+        t->ctx = script_create(cfg.script, url, headers);
+        script_init(ctx, t, argc - optind, &argv[optind]);
 
         if (i == 0) {
-            cfg.pipeline = script_verify_request(t->L);
-            cfg.dynamic  = !script_is_static(t->L);
-            cfg.delay    = script_has_delay(t->L);
-            if (script_want_response(t->L)) {
+            cfg.pipeline = script_verify_request(t->ctx);
+            cfg.dynamic  = !script_is_static(t->ctx);
+            cfg.delay    = script_has_delay(t->ctx);
+            if (script_want_response(t->ctx)) {
                 parser_settings.on_header_field = header_field;
                 parser_settings.on_header_value = header_value;
                 parser_settings.on_body         = response_body;
@@ -190,10 +191,10 @@ int main(int argc, char **argv) {
     printf("Requests/sec: %9.2Lf\n", req_per_s);
     printf("Transfer/sec: %10sB\n", format_binary(bytes_per_s));
 
-    if (script_has_done(L)) {
-        script_summary(L, runtime_us, complete, bytes);
-        script_errors(L, &errors);
-        script_done(L, statistics.latency, statistics.requests);
+    if (script_has_done(ctx)) {
+        script_summary(ctx, runtime_us, complete, bytes);
+        script_errors(ctx, &errors);
+        script_done(ctx, statistics.latency, statistics.requests);
     }
 
     return 0;
@@ -206,7 +207,7 @@ void *thread_main(void *arg) {
     size_t length = 0;
 
     if (!cfg.dynamic) {
-        script_request(thread->L, &request, &length);
+        script_request(thread->ctx, &request, &length);
     }
 
     thread->cs = zcalloc(thread->connections * sizeof(connection));
@@ -336,7 +337,7 @@ static int response_complete(http_parser *parser) {
 
     if (c->headers.buffer) {
         *c->headers.cursor++ = '\0';
-        script_response(thread->L, status, &c->headers, &c->body);
+        script_response(thread->ctx, status, &c->headers, &c->body);
         c->state = FIELD;
     }
 
@@ -386,7 +387,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     thread *thread = c->thread;
 
     if (c->delayed) {
-        uint64_t delay = script_delay(thread->L);
+        uint64_t delay = script_delay(thread->ctx);
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
         aeCreateTimeEvent(loop, delay, delay_request, c, NULL);
         return;
@@ -394,7 +395,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 
     if (!c->written) {
         if (cfg.dynamic) {
-            script_request(thread->L, &c->request, &c->length);
+            script_request(thread->ctx, &c->request, &c->length);
         }
         c->start   = time_us();
         c->pending = cfg.pipeline;

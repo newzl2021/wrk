@@ -1,5 +1,5 @@
 CFLAGS  += -std=c99 -Wall -O2 -D_REENTRANT
-LIBS    := -lm -lssl -lcrypto -lpthread
+LIBS    := -lpthread -lm -lssl -lcrypto
 
 TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
 
@@ -7,9 +7,9 @@ ifeq ($(TARGET), sunos)
 	CFLAGS += -D_PTHREADS -D_POSIX_C_SOURCE=200112L
 	LIBS   += -lsocket
 else ifeq ($(TARGET), darwin)
-	export MACOSX_DEPLOYMENT_TARGET = $(shell sw_vers -productVersion)
+	LDFLAGS += -pagezero_size 10000 -image_base 100000000
 else ifeq ($(TARGET), linux)
-	CFLAGS  += -D_POSIX_C_SOURCE=200112L -D_BSD_SOURCE -D_DEFAULT_SOURCE
+	CFLAGS  += -D_POSIX_C_SOURCE=200112L -D_BSD_SOURCE
 	LIBS    += -ldl
 	LDFLAGS += -Wl,-E
 else ifeq ($(TARGET), freebsd)
@@ -17,7 +17,7 @@ else ifeq ($(TARGET), freebsd)
 	LDFLAGS += -Wl,-E
 endif
 
-SRC  := wrk.c net.c ssl.c aprintf.c stats.c script.c units.c \
+SRC  := wrk.c net.c ssl.c aprintf.c stats.c lua_script.c script.c units.c \
 		ae.c zmalloc.c http_parser.c
 BIN  := wrk
 VER  ?= $(shell git describe --tags --always --dirty)
@@ -34,8 +34,7 @@ ifneq ($(WITH_LUAJIT),)
 	CFLAGS  += -I$(WITH_LUAJIT)/include
 	LDFLAGS += -L$(WITH_LUAJIT)/lib
 else
-	CFLAGS  += -I$(ODIR)/include/luajit-2.1
-	DEPS    += $(ODIR)/lib/libluajit-5.1.a
+	DEPS += $(ODIR)/lib/libluajit-5.1.a
 endif
 
 ifneq ($(WITH_OPENSSL),)
@@ -43,6 +42,13 @@ ifneq ($(WITH_OPENSSL),)
 	LDFLAGS += -L$(WITH_OPENSSL)/lib
 else
 	DEPS += $(ODIR)/lib/libssl.a
+endif
+
+ifneq ($(WITH_QUICKJS),)
+	CFLAGS  += -I$(WITH_QUICKJS)/include
+	LDFLAGS += -L$(WITH_QUICKJS)/lib
+else
+	DEPS += $(ODIR)/lib/libquickjs.a
 endif
 
 all: $(BIN)
@@ -59,9 +65,9 @@ $(OBJ): config.h Makefile $(DEPS) | $(ODIR)
 $(ODIR):
 	@mkdir -p $@
 
-$(ODIR)/bytecode.c: src/wrk.lua $(DEPS)
+$(ODIR)/bytecode.o: src/wrk.lua
 	@echo LUAJIT $<
-	@$(SHELL) -c 'PATH="obj/bin:$(PATH)" luajit -b "$(CURDIR)/$<" "$(CURDIR)/$@"'
+	@$(SHELL) -c 'PATH=obj/bin:$(PATH) luajit -b $(CURDIR)/$< $(CURDIR)/$@'
 
 $(ODIR)/version.o:
 	@echo 'const char *VERSION="$(VER)";' | $(CC) -xc -c -o $@ -
@@ -72,30 +78,40 @@ $(ODIR)/%.o : %.c
 
 # Dependencies
 
-LUAJIT  := $(notdir $(patsubst %.zip,%,$(wildcard deps/LuaJIT*.zip)))
+LUAJIT  := $(notdir $(patsubst %.tar.gz,%,$(wildcard deps/LuaJIT*.tar.gz)))
 OPENSSL := $(notdir $(patsubst %.tar.gz,%,$(wildcard deps/openssl*.tar.gz)))
+QUICKJS := $(notdir $(patsubst %.tar.gz,%,$(wildcard deps/quickjs*.tar.gz)))
 
 OPENSSL_OPTS = no-shared no-psk no-srp no-dtls no-idea --prefix=$(abspath $(ODIR))
 
-$(ODIR)/$(LUAJIT): deps/$(LUAJIT).zip | $(ODIR)
-	echo $(LUAJIT)
-	@unzip -nd $(ODIR) $<
+$(ODIR)/$(LUAJIT):  deps/$(LUAJIT).tar.gz  | $(ODIR)
+	@tar -C $(ODIR) -xf $<
 
 $(ODIR)/$(OPENSSL): deps/$(OPENSSL).tar.gz | $(ODIR)
+	@tar -C $(ODIR) -xf $<
+
+$(ODIR)/$(QUICKJS): deps/$(QUICKJS).tar.gz | $(ODIR)
 	@tar -C $(ODIR) -xf $<
 
 $(ODIR)/lib/libluajit-5.1.a: $(ODIR)/$(LUAJIT)
 	@echo Building LuaJIT...
 	@$(MAKE) -C $< PREFIX=$(abspath $(ODIR)) BUILDMODE=static install
-	@cd $(ODIR)/bin && ln -s luajit-2.1.0-beta3 luajit
 
 $(ODIR)/lib/libssl.a: $(ODIR)/$(OPENSSL)
 	@echo Building OpenSSL...
+ifeq ($(TARGET), darwin)
+	@$(SHELL) -c "cd $< && ./Configure $(OPENSSL_OPTS) darwin64-x86_64-cc"
+else
 	@$(SHELL) -c "cd $< && ./config $(OPENSSL_OPTS)"
+endif
 	@$(MAKE) -C $< depend
 	@$(MAKE) -C $<
 	@$(MAKE) -C $< install_sw
 	@touch $@
+
+$(ODIR)/lib/libquickjs.a: $(ODIR)/$(QUICKJS)
+	@echo Building quickjs...
+	@$(MAKE) -C $< DESTDIR=$(abspath $(ODIR)) prefix='' BUILDMODE=static install
 
 # ------------
 

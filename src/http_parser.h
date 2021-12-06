@@ -29,10 +29,11 @@ extern "C" {
 #define HTTP_PARSER_VERSION_MINOR 7
 #define HTTP_PARSER_VERSION_PATCH 1
 
-#include <stddef.h>
+#include <sys/types.h>
 #if defined(_WIN32) && !defined(__MINGW32__) && \
   (!defined(_MSC_VER) || _MSC_VER<1600) && !defined(__WINE__)
 #include <BaseTsd.h>
+#include <stddef.h>
 typedef __int8 int8_t;
 typedef unsigned __int8 uint8_t;
 typedef __int16 int16_t;
