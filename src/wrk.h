@@ -4,6 +4,7 @@
 #include "config.h"
 #include <pthread.h>
 #include <lua.h>
+#include <quickjs/quickjs-libc.h>
 #include <inttypes.h>
 #include <sys/types.h>
 #include <netdb.h>
@@ -26,6 +27,7 @@ extern const char *VERSION;
 
 typedef struct {
     lua_State *L;
+    JSContext *ctx;
 } ScriptContext;
 
 typedef struct {

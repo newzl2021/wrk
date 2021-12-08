@@ -45,6 +45,8 @@ JSContext *js_script_create(char *file, char *url, char **headers) {
 
     // TODO: set global wrk
 
+    return ctx; // TODO:
+
     lua_State *L = luaL_newstate();
     luaL_openlibs(L);
     (void) luaL_dostring(L, "wrk = require \"wrk\"");
@@ -97,7 +99,22 @@ JSContext *js_script_create(char *file, char *url, char **headers) {
     return L;
 }
 
-bool lua_script_resolve(lua_State *L, char *host, char *service) {
+bool js_script_resolve(JSContext *ctx, char *host, char *service) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue resolve = JS_GetPropertyInternal(ctx, global, JS_NewAtom(ctx, "resolve"), global, 0);
+    if (!JS_IsFunction(resolve)) {
+        fprintf(stderr, "resolve isn't function\n");
+        return 0;
+    }
+    JSValue params[] = {
+        JS_NewString(ctx, host),
+        JS_NewString(ctx, service),
+    };
+    if (JS_IsException(JS_Call(ctx, resolve, global, countof_arr(params), params))) {
+        js_std_dump_error(ctx);
+        return 0;
+    }
+
     lua_getglobal(L, "wrk");
 
     lua_getfield(L, -1, "resolve");
@@ -108,6 +125,7 @@ bool lua_script_resolve(lua_State *L, char *host, char *service) {
     lua_getfield(L, -1, "addrs");
     size_t count = lua_objlen(L, -1);
     lua_pop(L, 2);
+    // TODO: get addrs
     return count > 0;
 }
 
@@ -140,12 +158,20 @@ void lua_script_init(lua_State *L, thread *t, int argc, char **argv) {
     lua_pop(t->ctx.L, 1);
 }
 
-uint64_t lua_script_delay(lua_State *L) {
-    lua_getglobal(L, "delay");
-    lua_call(L, 0, 1);
-    uint64_t delay = lua_tonumber(L, -1);
-    lua_pop(L, 1);
-    return delay;
+uint64_t js_script_delay(JSContext *ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue delay = JS_GetPropertyInternal(ctx, global, JS_NewAtom(ctx, "delay"), global, 0);
+    if (!JS_IsFunction(delay)) {
+        fprintf(stderr, "delay isn't function\n");
+        return 0;
+    }
+    JSValue result = JS_Call(ctx, resolve, global, 0, NULL)
+    if (JS_IsException(result)) {
+        js_std_dump_error(ctx);
+        return 0;
+    } else {
+        // TODO: get delay
+    }
 }
 
 void lua_script_request(lua_State *L, char **buf, size_t *len) {
@@ -181,29 +207,29 @@ void lua_script_response(lua_State *L, int status, buffer *headers, buffer *body
     buffer_reset(body);
 }
 
-bool script_is_function(lua_State *L, char *name) {
-    lua_getglobal(L, name);
-    bool is_function = lua_isfunction(L, -1);
-    lua_pop(L, 1);
-    return is_function;
+bool script_is_function(JSContext *ctx, char *name) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue value = JS_GetPropertyInternal(ctx, global, JS_NewAtom(ctx, name), global, 0);
+    return JS_IsFunction(ctx, value);
 }
 
-bool lua_script_is_static(lua_State *L) {
-    return !script_is_function(L, "request");
+bool js_script_is_static(JSContext *ctx) {
+    return !script_is_function(ctx, "request");
 }
 
-bool lua_script_want_response(lua_State *L) {
-    return script_is_function(L, "response");
+bool js_script_want_response(JSContext *ctx) {
+    return script_is_function(ctx, "response");
 }
 
-bool lua_script_has_delay(lua_State *L) {
-    return script_is_function(L, "delay");
+bool js_script_has_delay(JSContext *ctx) {
+    return script_is_function(ctx, "delay");
 }
 
-bool lua_script_has_done(lua_State *L) {
-    return script_is_function(L, "done");
+bool js_script_has_done(JSContext *ctx) {
+    return script_is_function(ctx, "done");
 }
 
+// TODO: 
 void lua_script_header_done(lua_State *L, luaL_Buffer *buffer) {
     luaL_pushresult(buffer);
 }

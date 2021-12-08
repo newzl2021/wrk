@@ -7,7 +7,7 @@ ScriptContext script_create(char *file, char *url, char **headers) {
 }
 
 bool script_resolve(ScriptContext ctx, char *host, char *service) {
-    return lua_script_create(ctx.L, host, service);
+    return lua_script_resolve(ctx.L, host, service);
 }
 
 void script_done(ScriptContext ctx, stats *latency, stats *requests) {

@@ -1,5 +1,5 @@
 CFLAGS  += -std=c99 -Wall -O2 -D_REENTRANT
-LIBS    := -lpthread -lm -lssl -lcrypto
+LIBS    := -pthread -lm -lssl -lcrypto
 
 TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
 
@@ -111,7 +111,10 @@ endif
 
 $(ODIR)/lib/libquickjs.a: $(ODIR)/$(QUICKJS)
 	@echo Building quickjs...
-	@$(MAKE) -C $< DESTDIR=$(abspath $(ODIR)) prefix='' BUILDMODE=static install
+	@$(MAKE) -C $< DESTDIR=$(abspath $(ODIR)) prefix='' BUILDMODE=static libquickjs.a
+	@cp $(abspath $(ODIR))/quickjs/*.a $(abspath $(ODIR))/lib
+	@mkdir -p "$(abspath $(ODIR))/include/quickjs"
+	@cp $(abspath $(ODIR))/quickjs/quickjs.h $(abspath $(ODIR))/quickjs/quickjs-libc.h "$(abspath $(ODIR))/include/quickjs"
 
 # ------------
 

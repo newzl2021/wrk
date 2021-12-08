@@ -6,6 +6,8 @@
 #include "stats.h"
 #include "wrk.h"
 
+#define countof_arr(x) (sizeof(x) / sizeof((x)[0]))
+
 JSContext *js_script_create(char *, char *, char **);
 
 bool js_script_resolve(JSContext *, char *, char *);
